@@ -2,7 +2,6 @@ var events = require('events'), URI = require('./lib/URI/uris.js');
 
 module.exports = XMLHttpRequest = (function() {
   function nodeXHR(xhr) {
-    console.log(xhr._vars.method + 'ing ' + xhr._vars.url);
     var port = xhr._vars.url.heirpart().authority().port(),
         scheme = xhr._vars.url.scheme(),
         host = xhr._vars.url.heirpart().authority().host(),
@@ -15,27 +14,46 @@ module.exports = XMLHttpRequest = (function() {
     }
     if(!path) path = '/';
     if(query) path += query;
-    console.log([port,scheme,host,secure,path]);
     xhr._vars.headers['Host'] = host;
     xhr._vars.redirects.push(xhr._vars.url.toString());
     var client = require('http').createClient(port, host, secure);
     var request = client.request(xhr._vars.method, path.toString(), xhr._vars.headers);
     request.end();
     request.on('response', function (response) {
-      if([301,302,303,307].indexOf(response.statusCode) > -1) {
+      if(xhr.followRedirects && [301,302,303,307].indexOf(response.statusCode) > -1) {
         response.destroy();
         var newurl = xhr._vars.url.resolveReference(response.headers.location).toAbsolute();
         if(xhr._vars.redirects.indexOf(newurl.toString()) > -1) throw new Error('NETWORK_ERR: DOM Exception 19 - Redirect Loop');
         xhr._vars.url = newurl;
         nodeXHR(xhr);
       } else {
-        console.log('STATUS: ' + response.statusCode);
-        console.log('HEADERS: ' + JSON.stringify(response.headers));
-        
-        response.setEncoding('utf8');
-        response.on('data', function (chunk) {
-          console.log('BODY: ' + chunk);
+        //TODO abort check
+        //TODO network error
+        //TODO request timeout
+        xhr._vars.responseHeaders = response.headers;
+        xhr._changeState(XMLHttpRequest.HEADERS_RECEIVED);
+        var total = xhr._vars.responseHeaders['content-length'] ? xhr._vars.responseHeaders['content-length'] : 0;
+        var length = 0;
+        var data = '';
+        response.on('end', function() {
+          if(xhr.readyState == XMLHttpRequest.HEADERS_RECEIVED && data.length == 0) {
+            xhr._changeState(XMLHttpRequest.LOADING);
+          }
+          xhr._responseText = data.toString('utf8'); // TODO juggle this!
+          xhr._changeState(XMLHttpRequest.DONE);
+          xhr._sendProgressEvent('load',total == 0,length,total);
+          xhr._sendProgressEvent('loadend',total == 0,length,total);
         });
+        if(xhr._vars.method != 'HEAD') {
+          xhr._changeState(XMLHttpRequest.LOADING);
+        } else {
+          response.on('data', function (chunk) {
+            if(xhr.readyState == XMLHttpRequest.HEADERS_RECEIVED) xhr._changeState(XMLHttpRequest.LOADING);
+            length += chunk.length;
+            xhr._sendProgressEvent('progress',total == 0,length,total);
+            data += chunk;
+          });
+        }
       }
     });
   };
@@ -101,7 +119,7 @@ module.exports = XMLHttpRequest = (function() {
       _vars: __({
         method: null, url: null, async: null, user: null, pass: null, headers: null,
         sendflag: false, errorflag: false, uploadcomplete: false, abortsend: false,
-        response: null, redirects: []
+        responseHeaders: null, response: null, redirects: []
       }),
       _changeState: __(function(state) {
         this._readyState = state;
@@ -219,12 +237,22 @@ module.exports = XMLHttpRequest = (function() {
       }
       this._readyState = XMLHttpRequest.UNSENT;
     },
-    //TODO maybe move these to be defined on response..?
     getResponseHeader: function(header) {
       if(this.readyState <= 1 || this._vars.errorflag) return null;
+      for(i in header) if(header.charCodeAt(i) > 0XFF) return null;
+      header = header.toLowerCase();
+      if(!this._vars.responseHeaders[header]) return null;
+      if(Array.isArray(this._vars.responseHeaders[header])) return this._vars.responseHeaders[header].join(', ');
+      return this._vars.responseHeaders[header];
     },
-    getAllResponseHeaders: function(header) {
+    getAllResponseHeaders: function() {
       if(this.readyState <= 1 || this._vars.errorflag) return null;
+      var out = {}, _$ = this;
+      Object.keys(this._vars.responseHeaders).forEach(function(k) {
+        var v = _$._vars.responseHeaders[k];
+        out[k] = Array.isArray(v) ? v.join(', ') : v;
+      });
+      return out;
     },
     overrideMimeType: function(mime) {
       
@@ -235,7 +263,14 @@ module.exports = XMLHttpRequest = (function() {
 
 x = new XMLHttpRequest;
 x.onreadystatechange = function(e) {
+  console.log(e.target.readyState);
+};
+x.onprogress = function (e) {
   console.log(e);
 };
-x.open('get','http://dbpedia.org/resource/Edinburgh');
+x.onload = function(e) {
+  console.log( e.target.getAllResponseHeaders() );
+};
+x.open('head','http://webr3.org/mischatuffield');
+x.followRedirects = true;
 x.send();
