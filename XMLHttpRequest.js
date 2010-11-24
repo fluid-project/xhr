@@ -18,16 +18,33 @@ module.exports = XMLHttpRequest = (function() {
     xhr._vars.redirects.push(xhr._vars.url.toString());
     var client = require('http').createClient(port, host, secure);
     var request = client.request(xhr._vars.method, path.toString(), xhr._vars.headers);
-    request.end();
+    if(xhr._vars.abortsend) return request.destroy();
+    if(xhr._vars.request != null) {
+      request.end( xhr._vars.request )
+      xhr.upload._sendProgressEvent('progress', false, 0, 0);
+    } else {
+      request.end();
+    }
     request.on('response', function (response) {
+      function maybeAbort(force) {
+        if(force || xhr._vars.abortsend) {
+          response.removeAllListeners('end');
+          response.removeAllListeners('data');
+          response.destroy();
+        }
+      };
       if(xhr.followRedirects && [301,302,303,307].indexOf(response.statusCode) > -1) {
-        response.destroy();
+        maybeAbort(true);
         var newurl = xhr._vars.url.resolveReference(response.headers.location).toAbsolute();
         if(xhr._vars.redirects.indexOf(newurl.toString()) > -1) throw new Error('NETWORK_ERR: DOM Exception 19 - Redirect Loop');
         xhr._vars.url = newurl;
         nodeXHR(xhr);
       } else {
-        //TODO abort check
+        if(!xhr._vars.uploadComplete) {
+          xhr._vars.uploadComplete = true;
+          xhr.upload._sendProgressEvent('load', false, 0, 0);
+          xhr.upload._sendProgressEvent('loadend', false, 0, 0);
+        }
         //TODO network error
         //TODO request timeout
         xhr._vars.responseHeaders = response.headers;
@@ -36,6 +53,7 @@ module.exports = XMLHttpRequest = (function() {
         var length = 0;
         var data = '';
         response.on('end', function() {
+          maybeAbort();
           if(xhr.readyState == XMLHttpRequest.HEADERS_RECEIVED && data.length == 0) {
             xhr._changeState(XMLHttpRequest.LOADING);
           }
@@ -48,6 +66,7 @@ module.exports = XMLHttpRequest = (function() {
           xhr._changeState(XMLHttpRequest.LOADING);
         } else {
           response.on('data', function (chunk) {
+            maybeAbort();
             if(xhr.readyState == XMLHttpRequest.HEADERS_RECEIVED) xhr._changeState(XMLHttpRequest.LOADING);
             length += chunk.length;
             xhr._sendProgressEvent('progress',total == 0,length,total);
@@ -56,6 +75,32 @@ module.exports = XMLHttpRequest = (function() {
         }
       }
     });
+  };
+  
+  XMLHttpRequestUpload = function() {
+    function _(v) { return { writable: false, configurable : false, enumerable: true, value: v }};
+    function __(v) { return { writable: true, configurable : false, enumerable: false, value: v }};
+    function createEvent(type, target, augment) {
+      if(!augment) augment = {};
+      augment.type = type;
+      augment.target = target;
+      augment.timeStamp = new Date;
+      return augment;
+    };
+    Object.defineProperties(this, {
+      _sendProgressEvent: __(function(type, computable, loaded, total) {
+        var ev = createEvent(type, this, { lengthComputable: computable, loaded: loaded, total: total });
+        this.emit( type , ev );
+        if(this['on' + type]) this['on' + type](ev);
+      }),
+    });
+    this.onloadstart = null;
+    this.onprogress = null;
+    this.onabort = null;
+    this.onerror = null;
+    this.onload = null;
+    this.ontimeout = null;
+    this.onloadend = null;
   };
   XMLHttpRequest = function() {
     function _(v) { return { writable: false, configurable : false, enumerable: true, value: v }};
@@ -68,6 +113,7 @@ module.exports = XMLHttpRequest = (function() {
       return augment;
     };
     Object.defineProperties(this, {
+      upload: _(new XMLHttpRequestUpload),
       _readyState: __(0), readyState: {configurable : false, enumerable: true,
         get: function() { return this._readyState; },
       },
@@ -99,7 +145,6 @@ module.exports = XMLHttpRequest = (function() {
           this._withCredentials = v;
         }
       },
-      //TODO maybe move these to be defined on response..?
       _status: __(null), status: {configurable : false, enumerable: true,
         get: function() {
           if(this.readyState <= 1 || this._vars.errorflag) return 0;
@@ -117,7 +162,7 @@ module.exports = XMLHttpRequest = (function() {
       },
       //TODO responseBody, responseBlob, responseXML
       _vars: __({
-        method: null, url: null, async: null, user: null, pass: null, headers: null,
+        method: null, url: null, async: null, user: null, pass: null, headers: null, request: null,
         sendflag: false, errorflag: false, uploadcomplete: false, abortsend: false,
         responseHeaders: null, response: null, redirects: []
       }),
@@ -150,7 +195,6 @@ module.exports = XMLHttpRequest = (function() {
   XMLHttpRequest.DONE = 4;
   XMLHttpRequest.prototype = {
     __proto__: events.EventEmitter.prototype,
-    //TODO add .upload
     open: function(method, url, async, user, password ) {
       var tempuser, temppass, temp;
       for(i in method) if(method.charCodeAt(i) > 0xFF) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid method ' + method);
@@ -171,16 +215,14 @@ module.exports = XMLHttpRequest = (function() {
       }
       if(user) tempuser = user;
       if(password) tempuser = user;
-      // TODO 15. abort send algo, 16. cancel, 17. remove tasks
       this._vars.abortsend = true;
-      // cancel network activity?
-      // remove tasks?
       this._vars.method = method;
       this._vars.url = url;
       this._vars.async = async;
       this._vars.user = tempuser;
       this._vars.pass = temppass;
       this._vars.headers = {};
+      this._vars.request = null;
       this._timeout = 0;
       this._asBlob = false;
       this._followRedirects = false;
@@ -205,27 +247,29 @@ module.exports = XMLHttpRequest = (function() {
     send: function(data) {
       if(this.readyState != XMLHttpRequest.OPENED) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
       if(this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
-      if(['GET','HEADER'].indexOf(this._vars.method) == -1) {
+      this._vars.abortsend = false;
+      if(['GET','HEADER','OPTIONS','DELETE'].indexOf(this._vars.method) == -1) {
         data = null;
-      } else {
-        // handle data
       }
-      // TODO 5. If the asynchronous flag is true and one or more event listeners are registered on the XMLHttpRequestUpload object set the upload events flag to true. Otherwise, set the upload events flag to false.
-      this._vars.errorflag = false;
-      this._vars.uploadComplete = true; // TODO set to false when request body
-      
+      this._vars.uploadComplete = true;
+      if(data != null) {
+        this._vars.request = data; // handle data ? FormData ?
+        this._vars.uploadComplete = false;
+      } else if(['PUT','POST'].indexOf(this._vars.method) > -1) {
+        throw new Error('INVALID_STATE_ERR: DOM Exception 11 - data is required for ' + this._vars.method);
+      }
+      this._vars.errorflag = false;     
       this._vars.sendflag = true;
       this._changeState(this.readyState);
       this._sendProgressEvent('loadstart', false, 0, 0);
-      // TODO 8.4 If the upload complete flag is false dispatch a progress event called loadstart on the XMLHttpRequestUpload object.
+      if(!this._vars.uploadComplete) this.upload._sendProgressEvent('loadstart', false, 0, 0);
       nodeXHR(this);
       return;
     },
     abort: function() {
       this._vars.abortsend = true;
-      // cancel network activity?
-      // remove tasks?
       this._vars.response = null;
+      this._vars.request = null;
       this._vars.headers = null;
       this._vars.errorflag = true;
       if( !(this.readyState == XMLHttpRequest.UNSENT || (this.readyState == XMLHttpRequest.OPENED && !this.sendflag) || this.readyState == XMLHttpRequest.DONE) ) {
@@ -233,7 +277,10 @@ module.exports = XMLHttpRequest = (function() {
         this._changeState(XMLHttpRequest.DONE);
         this._sendProgressEvent('abort',false,0,0);
         this._sendProgressEvent('loadend',false,0,0);
-        // TODO 6. If the upload complete flag is false run these substeps:
+        if(!this._vars.uploadComplete) {
+          this.upload._sendProgressEvent('abort', false, 0, 0);
+          this.upload._sendProgressEvent('loadend', false, 0, 0);
+        }
       }
       this._readyState = XMLHttpRequest.UNSENT;
     },
@@ -255,7 +302,7 @@ module.exports = XMLHttpRequest = (function() {
       return out;
     },
     overrideMimeType: function(mime) {
-      
+      //TODO probably don't implement..
     }
   };
   return XMLHttpRequest;
