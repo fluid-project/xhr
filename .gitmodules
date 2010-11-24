@@ -1,0 +1,3 @@
+[submodule "lib/URI"]
+	path = lib/URI
+	url = git://github.com/webr3/URI.git
