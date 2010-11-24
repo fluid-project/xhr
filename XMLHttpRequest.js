@@ -1,6 +1,44 @@
 var events = require('events'), URI = require('./lib/URI/uris.js');
 
 module.exports = XMLHttpRequest = (function() {
+  function nodeXHR(xhr) {
+    console.log(xhr._vars.method + 'ing ' + xhr._vars.url);
+    var port = xhr._vars.url.heirpart().authority().port(),
+        scheme = xhr._vars.url.scheme(),
+        host = xhr._vars.url.heirpart().authority().host(),
+        path = xhr._vars.url.heirpart().path(),
+        query = xhr._vars.url.querystring(),
+        secure = scheme == 'https:';
+    if(!port) {
+      if(scheme == 'http:') port = 80;
+      if(scheme == 'https:') port = 443;
+    }
+    if(!path) path = '/';
+    if(query) path += query;
+    console.log([port,scheme,host,secure,path]);
+    xhr._vars.headers['Host'] = host;
+    xhr._vars.redirects.push(xhr._vars.url.toString());
+    var client = require('http').createClient(port, host, secure);
+    var request = client.request(xhr._vars.method, path.toString(), xhr._vars.headers);
+    request.end();
+    request.on('response', function (response) {
+      if([301,302,303,307].indexOf(response.statusCode) > -1) {
+        response.destroy();
+        var newurl = xhr._vars.url.resolveReference(response.headers.location).toAbsolute();
+        if(xhr._vars.redirects.indexOf(newurl.toString()) > -1) throw new Error('NETWORK_ERR: DOM Exception 19 - Redirect Loop');
+        xhr._vars.url = newurl;
+        nodeXHR(xhr);
+      } else {
+        console.log('STATUS: ' + response.statusCode);
+        console.log('HEADERS: ' + JSON.stringify(response.headers));
+        
+        response.setEncoding('utf8');
+        response.on('data', function (chunk) {
+          console.log('BODY: ' + chunk);
+        });
+      }
+    });
+  };
   XMLHttpRequest = function() {
     function _(v) { return { writable: false, configurable : false, enumerable: true, value: v }};
     function __(v) { return { writable: true, configurable : false, enumerable: false, value: v }};
@@ -18,32 +56,28 @@ module.exports = XMLHttpRequest = (function() {
       _timeout: __(0), timeout: {configurable : false, enumerable: true,
         get: function() { return this._timeout; },
         set: function(v) {
-          if(this.readyState != XMLHttpRequest.OPENED) console.log('INVALID_STATE_ERR');
-          if(this._vars.sendflag) console.log('INVALID_STATE_ERR');
+          if(this.readyState != XMLHttpRequest.OPENED || this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
           this._timeout = v;
         }
       },
       _asBlob: __(false), asBlob: {configurable : false, enumerable: true,
         get: function() { return this._asBlob; },
         set: function(v) {
-          if(this.readyState != XMLHttpRequest.OPENED) console.log('INVALID_STATE_ERR');
-          if(this._vars.sendflag) console.log('INVALID_STATE_ERR');
+          if(this.readyState != XMLHttpRequest.OPENED || this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
           this._asBlob = v;
         }
       },
       _followRedirects: __(false), followRedirects: {configurable : false, enumerable: true,
         get: function() { return this._followRedirects; },
         set: function(v) {
-          if(this.readyState != XMLHttpRequest.OPENED) console.log('INVALID_STATE_ERR');
-          if(this._vars.sendflag) console.log('INVALID_STATE_ERR');
+          if(this.readyState != XMLHttpRequest.OPENED || this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
           this._followRedirects = v;
         }
       },
       _withCredentials: __(false), withCredentials: {configurable : false, enumerable: true,
         get: function() { return this._withCredentials; },
         set: function(v) {
-          if(this.readyState != XMLHttpRequest.OPENED) console.log('INVALID_STATE_ERR');
-          if(this._vars.sendflag) console.log('INVALID_STATE_ERR');
+          if(this.readyState != XMLHttpRequest.OPENED || this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
           this._withCredentials = v;
         }
       },
@@ -67,7 +101,7 @@ module.exports = XMLHttpRequest = (function() {
       _vars: __({
         method: null, url: null, async: null, user: null, pass: null, headers: null,
         sendflag: false, errorflag: false, uploadcomplete: false, abortsend: false,
-        response: null
+        response: null, redirects: []
       }),
       _changeState: __(function(state) {
         this._readyState = state;
@@ -101,10 +135,11 @@ module.exports = XMLHttpRequest = (function() {
     //TODO add .upload
     open: function(method, url, async, user, password ) {
       var tempuser, temppass, temp;
-      for(i in method) if(method.charCodeAt(i) > 0xFF) console.log('SYNTAX_ERR ' + method);
+      for(i in method) if(method.charCodeAt(i) > 0xFF) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid method ' + method);
       method = (['CONNECT','DELETE','GET','HEAD','OPTIONS','POST','PUT','TRACE','TRACK'].indexOf(method.toUpperCase()) > -1) ? method.toUpperCase() : method;
-      if(['CONNECT','TRACE','TRACK'].indexOf(method) > -1) console.log('SECURITY_ERR ' + method);
+      if(['CONNECT','TRACE','TRACK'].indexOf(method) > -1) throw new Error('SECURITY_ERR: DOM Exception 18 - method not allowed ' + method);
       url = new URI(url).toAbsolute();
+      if(['http:','https:'].indexOf(url.scheme()) == -1) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid url scheme ' + url.scheme());
       temp = url.heirpart().authority().userinfo();
       if(temp) {
         temp = temp.split(':');
@@ -114,7 +149,7 @@ module.exports = XMLHttpRequest = (function() {
       async = async == null ? true : async;
       if(!async) {
         async = true;
-        console.log('SYNC operations nto permitted, for obvious reasons...!');
+        require('util').debug('Sorry, async only');
       }
       if(user) tempuser = user;
       if(password) tempuser = user;
@@ -137,10 +172,10 @@ module.exports = XMLHttpRequest = (function() {
       this._changeState(XMLHttpRequest.OPENED);      
     },
     setRequestHeader: function(header, value) {
-      if(this.readyState != XMLHttpRequest.OPENED) console.log('INVALID_STATE_ERR');
-      if(this.vars.sendflag) console.log('INVALID_STATE_ERR');
-      for(i in header) if(header.charCodeAt(i) > 0XFF) console.log('SYNTAX_ERR ' + header);
-      for(i in value) if(value.charCodeAt(i) > 0XFF) console.log('SYNTAX_ERR ' + value);
+      if(this.readyState != XMLHttpRequest.OPENED) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
+      if(this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
+      for(i in header) if(header.charCodeAt(i) > 0XFF) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid header ' + header);
+      for(i in value) if(value.charCodeAt(i) > 0XFF) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid value ' + header);
       if(['accept-charset','accept-encoding','access-control-request-headers','access-control-request-method',
           'connection','content-length','cookie','cookie2','content-transfer-encoding','date','expect','host',
           'keep-alive','origin','referer','te','trailer','transfer-encoding','upgrade','user-agent','via']
@@ -150,14 +185,13 @@ module.exports = XMLHttpRequest = (function() {
       this._vars.headers[header].unshift(value);
     },
     send: function(data) {
-      if(this.readyState != XMLHttpRequest.OPENED) console.log('INVALID_STATE_ERR');
-      if(this._vars.sendflag) console.log('INVALID_STATE_ERR');
+      if(this.readyState != XMLHttpRequest.OPENED) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
+      if(this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
       if(['GET','HEADER'].indexOf(this._vars.method) == -1) {
         data = null;
       } else {
         // handle data
       }
-      // TODO 4. If the asynchronous flag is false release the storage mutex.
       // TODO 5. If the asynchronous flag is true and one or more event listeners are registered on the XMLHttpRequestUpload object set the upload events flag to true. Otherwise, set the upload events flag to false.
       this._vars.errorflag = false;
       this._vars.uploadComplete = true; // TODO set to false when request body
@@ -166,8 +200,8 @@ module.exports = XMLHttpRequest = (function() {
       this._changeState(this.readyState);
       this._sendProgressEvent('loadstart', false, 0, 0);
       // TODO 8.4 If the upload complete flag is false dispatch a progress event called loadstart on the XMLHttpRequestUpload object.
+      nodeXHR(this);
       return;
-      
     },
     abort: function() {
       this._vars.abortsend = true;
@@ -202,7 +236,6 @@ module.exports = XMLHttpRequest = (function() {
 x = new XMLHttpRequest;
 x.onreadystatechange = function(e) {
   console.log(e);
-  console.log(e.target.timeout);
 };
-x.timeout = 10;
-x.open('get','http://webr3.org/nathan#me');
+x.open('get','http://dbpedia.org/resource/Edinburgh');
+x.send();
