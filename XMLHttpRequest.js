@@ -2,6 +2,19 @@ var events = require('events'), URI = require('./lib/URI/uris.js');
 
 module.exports = XMLHttpRequest = (function() {
   function nodeXHR(xhr) {
+    function _e(e,t) {
+      e = t == null ? new Error('NETWORK_ERR: DOM Exception 19 - ' + e) : new Error('TIMEOUT_ERR: DOM Exception 23 - ' + e);
+      xhr._vars.response = null;
+      xhr._vars.headers = {};
+      xhr._vars.errorflag = true;
+      xhr._changeState(XMLHttpRequest.DONE);
+      xhr.emit('error', e);
+      xhr._sendProgressEvent('loadend', false, 0, 0);
+      if(!xhr._vars.uploadComplete) {
+        xhr.upload.emit('error',e);
+        xhr.upload._sendProgressEvent('loadend', false, 0, 0);
+      }
+    };
     var port = xhr._vars.url.heirpart().authority().port(),
         scheme = xhr._vars.url.scheme(),
         host = xhr._vars.url.heirpart().authority().host(),
@@ -16,8 +29,11 @@ module.exports = XMLHttpRequest = (function() {
     if(query) path += query;
     xhr._vars.headers['Host'] = host;
     xhr._vars.redirects.push(xhr._vars.url.toString());
-    var client = require('http').createClient(port, host, secure);
+    var http = require('http');
+    var client = http.createClient(port, host, secure);
+    client.on('error', _e); client.on('timeout', function(e) { _e(e,true) } );
     var request = client.request(xhr._vars.method, path.toString(), xhr._vars.headers);
+    request.on('error', _e); request.on('timeout', function(e) { _e(e,true) } );
     if(xhr._vars.abortsend) return request.destroy();
     if(xhr._vars.request != null) {
       request.end( xhr._vars.request )
@@ -36,7 +52,10 @@ module.exports = XMLHttpRequest = (function() {
       if(xhr.followRedirects && [301,302,303,307].indexOf(response.statusCode) > -1) {
         maybeAbort(true);
         var newurl = xhr._vars.url.resolveReference(response.headers.location).toAbsolute();
-        if(xhr._vars.redirects.indexOf(newurl.toString()) > -1) throw new Error('NETWORK_ERR: DOM Exception 19 - Redirect Loop');
+        if(xhr._vars.redirects.indexOf(newurl.toString()) > -1) {
+          client.emit('error', new Error('NETWORK_ERR: DOM Exception 19 - Redirect Loop') );
+          return;
+        }
         xhr._vars.url = newurl;
         nodeXHR(xhr);
       } else {
@@ -45,9 +64,9 @@ module.exports = XMLHttpRequest = (function() {
           xhr.upload._sendProgressEvent('load', false, 0, 0);
           xhr.upload._sendProgressEvent('loadend', false, 0, 0);
         }
-        //TODO network error
-        //TODO request timeout
         xhr._vars.responseHeaders = response.headers;
+        xhr._status = response.statusCode;
+        xhr._statusText = xhr._status + ' ' + http.STATUS_CODES[xhr._status];
         xhr._changeState(XMLHttpRequest.HEADERS_RECEIVED);
         var total = xhr._vars.responseHeaders['content-length'] ? xhr._vars.responseHeaders['content-length'] : 0;
         var length = 0;
@@ -62,7 +81,7 @@ module.exports = XMLHttpRequest = (function() {
           xhr._sendProgressEvent('load',total == 0,length,total);
           xhr._sendProgressEvent('loadend',total == 0,length,total);
         });
-        if(xhr._vars.method != 'HEAD') {
+        if(xhr._vars.method == 'HEAD' || xhr.status == 204) {
           xhr._changeState(XMLHttpRequest.LOADING);
         } else {
           response.on('data', function (chunk) {
@@ -101,7 +120,11 @@ module.exports = XMLHttpRequest = (function() {
     this.onload = null;
     this.ontimeout = null;
     this.onloadend = null;
+    this.on('error', function(e) {
+      if(this.onerror) this.onerror(e);
+    });
   };
+  XMLHttpRequestUpload.prototype = {__proto__: events.EventEmitter.prototype};
   XMLHttpRequest = function() {
     function _(v) { return { writable: false, configurable : false, enumerable: true, value: v }};
     function __(v) { return { writable: true, configurable : false, enumerable: false, value: v }};
@@ -153,7 +176,7 @@ module.exports = XMLHttpRequest = (function() {
       },
       _statusText: __(null), statusText: {configurable : false, enumerable: true,
         get: function() {
-          if(this.readyState <= 1 || this._vars.errorflag) return 0;
+          if(this.readyState <= 1 || this._vars.errorflag) return '';
           return this._statusText;
         },
       },
@@ -174,9 +197,12 @@ module.exports = XMLHttpRequest = (function() {
       }),
       _sendProgressEvent: __(function(type, computable, loaded, total) {
         var ev = createEvent(type, this, { lengthComputable: computable, loaded: loaded, total: total });
+        this.__emit(type,ev);
+      }),
+      __emit: _(function(type,ev) {
         this.emit( type , ev );
         if(this['on' + type]) this['on' + type](ev);
-      }),
+      })
     });
     this.onloadstart = null;
     this.onprogress = null;
@@ -186,6 +212,10 @@ module.exports = XMLHttpRequest = (function() {
     this.ontimeout = null;
     this.onloadend = null;
     this.onreadystatechange = null;
+    this.on('error', function(e) {
+      if(this.onerror) this.onerror(e);
+      else throw e;
+    });
   };
   // states
   XMLHttpRequest.UNSENT = 0;
@@ -248,15 +278,13 @@ module.exports = XMLHttpRequest = (function() {
       if(this.readyState != XMLHttpRequest.OPENED) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
       if(this._vars.sendflag) throw new Error('INVALID_STATE_ERR: DOM Exception 11');
       this._vars.abortsend = false;
-      if(['GET','HEADER','OPTIONS','DELETE'].indexOf(this._vars.method) == -1) {
+      if(['GET','HEADER','OPTIONS','DELETE'].indexOf(this._vars.method) > -1) {
         data = null;
       }
       this._vars.uploadComplete = true;
       if(data != null) {
         this._vars.request = data; // handle data ? FormData ?
         this._vars.uploadComplete = false;
-      } else if(['PUT','POST'].indexOf(this._vars.method) > -1) {
-        throw new Error('INVALID_STATE_ERR: DOM Exception 11 - data is required for ' + this._vars.method);
       }
       this._vars.errorflag = false;     
       this._vars.sendflag = true;
@@ -302,22 +330,8 @@ module.exports = XMLHttpRequest = (function() {
       return out;
     },
     overrideMimeType: function(mime) {
-      //TODO probably don't implement..
+      // nothing one can really implement here..
     }
   };
   return XMLHttpRequest;
 })();
-
-x = new XMLHttpRequest;
-x.onreadystatechange = function(e) {
-  console.log(e.target.readyState);
-};
-x.onprogress = function (e) {
-  console.log(e);
-};
-x.onload = function(e) {
-  console.log( e.target.getAllResponseHeaders() );
-};
-x.open('head','http://webr3.org/mischatuffield');
-x.followRedirects = true;
-x.send();
