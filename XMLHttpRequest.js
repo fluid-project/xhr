@@ -1,7 +1,26 @@
 var events = require('events'), URI = require('./lib/URI/uris.js');
 
 module.exports = XMLHttpRequest = (function() {
-  function nodeXHR(xhr) {
+  var fs = require("fs");
+  function nodeFSXHR(xhr) {
+      var path = String(xhr._vars.url.heirpart().path());
+      xhr._changeState(XMLHttpRequest.HEADERS_RECEIVED);
+      xhr._changeState(XMLHttpRequest.LOADING);
+      xhr._vars.responseHeaders = [];
+      try {
+        // TODO: support binary data, custom encodings, asynchrony
+          var data = fs.readFileSync(path, "utf8");
+          xhr._responseText = data;
+          xhr._status = 200; 
+      }
+      catch (e) {
+          xhr._statusText = e.toString();
+          xhr._status = 404;
+      }
+      xhr._changeState(XMLHttpRequest.DONE);
+  }
+  
+  function nodeHTTPXHR(xhr) {
     function _e(e,t) {
       e = t == null ? new Error('NETWORK_ERR: DOM Exception 19 - ' + e) : new Error('TIMEOUT_ERR: DOM Exception 23 - ' + e);
       xhr._vars.response = null;
@@ -57,7 +76,7 @@ module.exports = XMLHttpRequest = (function() {
           return;
         }
         xhr._vars.url = newurl;
-        nodeXHR(xhr);
+        nodeHTTPXHR(xhr);
       } else {
         if(!xhr._vars.uploadComplete) {
           xhr._vars.uploadComplete = true;
@@ -226,20 +245,20 @@ module.exports = XMLHttpRequest = (function() {
   XMLHttpRequest.prototype = {
     __proto__: events.EventEmitter.prototype,
     open: function(method, url, async, user, password ) {
-      var tempuser, temppass, temp;
+      url = new URI(url).toAbsolute();
+      var scheme = url.scheme();
       for(i in method) if(method.charCodeAt(i) > 0xFF) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid method ' + method);
       method = (['CONNECT','DELETE','GET','HEAD','OPTIONS','POST','PUT','TRACE','TRACK'].indexOf(method.toUpperCase()) > -1) ? method.toUpperCase() : method;
       if(['CONNECT','TRACE','TRACK'].indexOf(method) > -1) throw new Error('SECURITY_ERR: DOM Exception 18 - method not allowed ' + method);
-      url = new URI(url).toAbsolute();
-      if(['http:','https:'].indexOf(url.scheme()) == -1) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid url scheme ' + url.scheme());
-      temp = url.heirpart().authority().userinfo();
+      if(['http:','https:','file:'].indexOf(scheme) === -1) throw new Error('SYNTAX_ERR: DOM Exception 12 - invalid url scheme ' + scheme);
+      var temp = url.heirpart().authority().userinfo();
       if(temp) {
         temp = temp.split(':');
-        tempuser = temp[0];
-        temppass = temp[1] ? temp[1] : temppass;
+        var tempuser = temp[0];
+        var temppass = temp[1] ? temp[1] : temppass;
       }
       async = async == null ? true : async;
-      if(!async) {
+      if(!async && scheme !== "file:") {
         async = true;
         require('util').debug('Sorry, async only');
       }
@@ -290,8 +309,13 @@ module.exports = XMLHttpRequest = (function() {
       this._vars.sendflag = true;
       this._changeState(this.readyState);
       this._sendProgressEvent('loadstart', false, 0, 0);
-      if(!this._vars.uploadComplete) this.upload._sendProgressEvent('loadstart', false, 0, 0);
-      nodeXHR(this);
+      if (!this._vars.uploadComplete) this.upload._sendProgressEvent('loadstart', false, 0, 0);
+      if (this._vars.url.scheme() === "file:") {
+          nodeFSXHR(this);  
+      }
+      else {
+          nodeHTTPXHR(this);
+      }
       return;
     },
     abort: function() {
