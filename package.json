@@ -1,0 +1,51 @@
+{
+    "name": "fluid-xhr",
+    "version": "0.1.0",
+    "description": "An implementation of the browser XMLHTTPRequest API for use in Node.js",
+    "keywords": [
+        "dom",
+        "xhr",
+        "xmlhttprequest",
+        "xmlhttprequest2",
+        "javascript"
+    ],
+    "maintainers": [
+        {
+            "name": "Antranig Basman",
+            "email": "amb26git@ponder.org.uk",
+            "web": "http://ponder.org.uk"
+        },
+        {
+            "name": "Colin Clark",
+            "email": "cclark@ocad.ca",
+            "web": "http://fluidproject.org"
+        }
+    ],
+    "bugs": {
+        "mail": "amb26git@ponder.org.uk",
+        "web": "http://github.com/fluid-project/xhr/issues"
+    },
+    "licenses": [
+        {
+            "type": "unknown",
+            "url": "http://not.currently.known/"
+        }
+    ],
+    "repositories": [
+        {
+            "type": "git",
+            "url": "git://github.com/fluid-project/xhr.git"
+        }
+    ],
+    "implements": [
+        "http://www.w3.org/TR/XMLHttpRequest/"
+    ],
+    "dependencies": {
+    },
+    "engines" : { "node" : ">=0.1.9" },
+    "directories": {
+        "lib": "./lib/URI"
+    },
+    "main": "./XMLHttpRequest.js"
+}
+
