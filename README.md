@@ -1,3 +1,6 @@
+This repository has been archived and is now read-only. Please contact one of the fluid-project maintainers if you’d like to request it be unarchived for further development. 
+https://wiki.fluidproject.org/display/fluid/Get+Involved
+
 # XMLHttpRequest 1.5 #
 
 A Hybrid XMLHttpRequest implementation for node.js, half way between XHR and XHR 2,
